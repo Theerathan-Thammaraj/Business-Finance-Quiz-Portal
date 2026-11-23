@@ -44,7 +44,7 @@
           }
         }
       }
-    }
+    };
   </script>
 
   <style>
@@ -2345,7 +2345,6 @@
     // Results View State
     let lastResultsData = null;
     let currentReviewFilter = 'all';
-    let isFlashcardResultMode = false;
 
     const MODE_META = {
       final60: {
@@ -2433,7 +2432,6 @@
         let map = rawMap ? JSON.parse(rawMap) : {};
         if (!map || typeof map !== 'object') map = {};
 
-        // Migrate legacy single-session storage if present
         const legacyRaw = localStorage.getItem(IN_PROGRESS_KEY);
         if (legacyRaw) {
           const legacy = JSON.parse(legacyRaw);
@@ -2486,6 +2484,29 @@
       }
     }
 
+    function getFlashcardSession() {
+      try {
+        const raw = localStorage.getItem(FLASHCARD_SESSION_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function saveFlashcardSession() {
+      try {
+        localStorage.setItem(FLASHCARD_SESSION_KEY, JSON.stringify({
+          filterLecture: fcFilterLecture,
+          deckIds: fcDeck.map(c => c.id),
+          index: fcIndex,
+          results: fcResults,
+          updatedAt: Date.now()
+        }));
+      } catch (e) {
+        // Ignore storage quota errors
+      }
+    }
+
     // =========================================================================
     // 6. SAVE STATUS PILL & VIEW NAVIGATION
     // =========================================================================
@@ -2498,7 +2519,7 @@
       if (state === 'unsaved') {
         pill.className = 'inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-medium px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 transition-colors';
         dot.className = 'w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0';
-        text.textContent = customText || 'ยังไม่ได้บันทึก (กำลังทำข้อสอบ)';
+        text.textContent = customText || 'ยังไม่ได้บันทึก';
       } else if (state === 'saved') {
         pill.className = 'inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 transition-colors';
         dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0';
@@ -2515,12 +2536,48 @@
       if (savePulseTimeout) clearTimeout(savePulseTimeout);
       savePulseTimeout = setTimeout(() => {
         const quizVisible = !document.getElementById('quiz-view').classList.contains('hidden');
+        const fcVisible = !document.getElementById('flashcard-view').classList.contains('hidden');
         if (quizVisible) {
-          setSaveStatus('unsaved');
+          renderQuestion();
+        } else if (fcVisible) {
+          renderFlashcard();
         } else {
           setSaveStatus('autosave');
         }
       }, 1800);
+    }
+
+    function stopExamTimer() {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+      }
+      document.getElementById('exam-timer-pill').classList.add('hidden');
+    }
+
+    function updateTimerDisplay() {
+      const mins = Math.floor(secondsRemaining / 60);
+      const secs = secondsRemaining % 60;
+      const el = document.getElementById('timer-display');
+      if (el) {
+        el.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      }
+    }
+
+    function startExamTimer() {
+      stopExamTimer();
+      const pill = document.getElementById('exam-timer-pill');
+      pill.classList.remove('hidden');
+      updateTimerDisplay();
+      timerInterval = setInterval(() => {
+        if (secondsRemaining > 0) {
+          secondsRemaining--;
+          updateTimerDisplay();
+        } else {
+          stopExamTimer();
+          finishQuiz();
+        }
+      }, 1000);
     }
 
     function showOnlyView(viewId) {
@@ -2536,92 +2593,85 @@
       views.forEach(id => {
         const el = document.getElementById(id);
         if (el) {
-          if (id === viewId) {
-            el.classList.remove('hidden');
-          } else {
-            el.classList.add('hidden');
-          }
+          if (id === viewId) el.classList.remove('hidden');
+          else el.classList.add('hidden');
         }
       });
 
       const homeBtn = document.getElementById('header-home-btn');
-      const timerPill = document.getElementById('exam-timer-pill');
-
-      if (viewId === 'welcome-view' || viewId === 'chapter-select-view') {
-        homeBtn.classList.add('hidden');
-      } else {
-        homeBtn.classList.remove('hidden');
+      if (homeBtn) {
+        if (viewId === 'welcome-view' || viewId === 'chapter-select-view') {
+          homeBtn.classList.add('hidden');
+        } else {
+          homeBtn.classList.remove('hidden');
+        }
       }
 
-      if (viewId === 'quiz-view' && examFeedbackMode === 'exam') {
-        timerPill.classList.remove('hidden');
-      } else {
-        timerPill.classList.add('hidden');
+      if (viewId !== 'quiz-view') {
+        stopExamTimer();
+      }
+
+      if (viewId === 'welcome-view' || viewId === 'chapter-select-view' || viewId === 'setup-view' || viewId === 'history-view') {
+        setSaveStatus('autosave');
       }
 
       window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function showWelcome() {
+      if (fcAutoAdvanceTimer) {
+        clearTimeout(fcAutoAdvanceTimer);
+        fcAutoAdvanceTimer = null;
+      }
+      showOnlyView('welcome-view');
     }
 
     function enterPortal() {
       goHome();
     }
 
-    function showWelcome() {
-      stopExamTimer();
-      setSaveStatus('autosave');
-      showOnlyView('welcome-view');
-    }
-
     function goHome() {
-      stopExamTimer();
+      if (fcAutoAdvanceTimer) {
+        clearTimeout(fcAutoAdvanceTimer);
+        fcAutoAdvanceTimer = null;
+      }
       updateHomeProgressIndicators();
-      setSaveStatus('autosave');
       showOnlyView('chapter-select-view');
     }
 
-    function openHistoryView() {
-      stopExamTimer();
-      renderHistoryDashboard();
-      const historyList = getHistoryList();
-      setSaveStatus(historyList.length > 0 ? 'saved' : 'autosave', historyList.length > 0 ? 'Saved' : 'Auto Save');
-      showOnlyView('history-view');
-    }
-
     // =========================================================================
-    // 7. HOME PROGRESS INDICATORS & RESUME BANNER / MODAL
+    // 7. HOME PROGRESS INDICATORS & RESUME LOGIC
     // =========================================================================
     function updateHomeProgressIndicators() {
       const map = getInProgressMap();
-      const validSessions = Object.values(map).filter(
-        s => s && Array.isArray(s.questions) && s.questions.length > 0
-      );
-      validSessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      const modes = Object.keys(map).filter(m => map[m] && Array.isArray(map[m].questions) && map[m].questions.length > 0);
+
+      // Sort by most recently updated
+      modes.sort((a, b) => (map[b].updatedAt || 0) - (map[a].updatedAt || 0));
 
       const banner = document.getElementById('resume-exam-banner');
-      if (validSessions.length > 0) {
-        const primary = validSessions[0];
-        activeBannerSessionMode = primary.mode;
-        const meta = MODE_META[primary.mode] || MODE_META.final60;
-        const answeredCount = Object.keys(primary.userAnswers || {}).length;
-        const totalCount = primary.questions.length;
+      if (modes.length > 0) {
+        const primaryMode = modes[0];
+        activeBannerSessionMode = primaryMode;
+        const session = map[primaryMode];
+        const total = session.questions.length;
+        const answered = session.questions.filter(q => session.userAnswers && session.userAnswers[q.id] !== undefined).length;
+        const meta = MODE_META[primaryMode] || MODE_META.final60;
 
-        document.getElementById('resume-banner-mode-tag').textContent =
-          primary.feedbackMode === 'exam' ? 'โหมดสอบจริง (จับเวลา)' : 'โหมดฝึกฝน';
-        document.getElementById('resume-banner-time').textContent = formatRelativeTime(primary.updatedAt);
+        document.getElementById('resume-banner-mode-tag').textContent = session.feedbackMode === 'exam' ? 'โหมดสอบจริง' : 'โหมดฝึกฝน';
+        document.getElementById('resume-banner-time').textContent = formatRelativeTime(session.updatedAt);
         document.getElementById('resume-banner-title').textContent = meta.shortName;
-        document.getElementById('resume-banner-progress').textContent =
-          `ทำไปแล้ว ${answeredCount} / ${totalCount} ข้อ • ค้างอยู่ที่ข้อ ${(primary.currentIndex || 0) + 1}`;
+        document.getElementById('resume-banner-progress').textContent = `ทำไปแล้ว ${answered} / ${total} ข้อ • ค้างอยู่ที่ข้อ ${(session.currentIndex || 0) + 1}`;
 
         const otherBar = document.getElementById('resume-other-sessions-bar');
         const otherList = document.getElementById('resume-other-sessions-list');
-        if (validSessions.length > 1) {
+        if (modes.length > 1) {
           otherBar.classList.remove('hidden');
-          otherList.innerHTML = validSessions.slice(1).map(s => {
-            const sMeta = MODE_META[s.mode] || { shortName: s.mode };
-            const sAns = Object.keys(s.userAnswers || {}).length;
-            return `<button type="button" onclick="resumeSavedQuiz('${s.mode}')" class="px-3 py-1 rounded-full bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-semibold transition">
-              ${escapeHtml(sMeta.shortName)} (${sAns}/${s.questions.length}) →
-            </button>`;
+          otherList.innerHTML = modes.slice(1).map(m => {
+            const s = map[m];
+            const ans = s.questions.filter(q => s.userAnswers && s.userAnswers[q.id] !== undefined).length;
+            const label = (MODE_META[m] && MODE_META[m].shortName) || m;
+            return `<button type="button" onclick="resumeSpecificSavedMode('${m}')" class="px-3 py-1 rounded-full bg-white hover:bg-cbs-50 text-cbs-800 border border-amber-300 text-xs font-semibold transition">${escapeHtml(label)} (${ans}/${s.questions.length})</button>`;
           }).join('');
         } else {
           otherBar.classList.add('hidden');
@@ -2633,23 +2683,22 @@
         banner.classList.add('hidden');
       }
 
-      // Per-card progress indicators
-      const cardConfigs = [
+      // Update individual mode cards on home
+      const modeCardConfigs = [
         { mode: 'final60', pillId: 'home-final60-progress-pill', btnId: 'home-final60-btn-text', defaultBtn: 'เข้าสู่ชุดข้อสอบปลายภาค 60 ข้อ' },
         { mode: 'ch8', pillId: 'home-ch8-progress-pill', btnId: 'home-ch8-btn-text', defaultBtn: 'เริ่มทบทวนบทที่ 8' },
         { mode: 'ch9', pillId: 'home-ch9-progress-pill', btnId: 'home-ch9-btn-text', defaultBtn: 'เริ่มทบทวนบทที่ 9' },
         { mode: 'all', pillId: 'home-all-progress-pill', btnId: 'home-all-btn-text', defaultBtn: 'เริ่มทำชุดรวม 32 ข้อ' }
       ];
 
-      cardConfigs.forEach(cfg => {
-        const session = map[cfg.mode];
+      modeCardConfigs.forEach(cfg => {
         const pill = document.getElementById(cfg.pillId);
         const btnText = document.getElementById(cfg.btnId);
-        if (session && Array.isArray(session.questions) && session.questions.length > 0) {
-          const ans = Object.keys(session.userAnswers || {}).length;
-          const tot = session.questions.length;
+        const s = map[cfg.mode];
+        if (s && Array.isArray(s.questions) && s.questions.length > 0) {
+          const ans = s.questions.filter(q => s.userAnswers && s.userAnswers[q.id] !== undefined).length;
           if (pill) {
-            pill.textContent = `ค้างไว้ ${ans}/${tot} ข้อ (ข้อ ${(session.currentIndex || 0) + 1})`;
+            pill.textContent = `ค้างไว้ ${ans}/${s.questions.length} ข้อ`;
             pill.classList.remove('hidden');
           }
           if (btnText) btnText.textContent = 'ทำต่อ / เริ่มใหม่';
@@ -2659,115 +2708,77 @@
         }
       });
 
-      updateHomeFlashcardIndicators();
-    }
+      // Update Flashcard indicators on Home
+      const fcSaved = getFlashcardSession();
+      const fcScorePill = document.getElementById('home-flashcard-score-pill');
+      const fcProgPill = document.getElementById('home-flashcard-progress-pill');
+      const fcMainBtn = document.getElementById('home-fc-main-btn-text');
+      const fcRestartBtn = document.getElementById('home-fc-restart-btn');
 
-    function updateHomeFlashcardIndicators() {
-      const savedFc = loadFlashcardSession();
-      const results = (savedFc && savedFc.results) ? savedFc.results : {};
-      const correctCount = FLASHCARDS_DATA.filter(c => results[c.id] === 'correct').length;
-      const gradedCount = FLASHCARDS_DATA.filter(c => results[c.id] !== undefined).length;
+      if (fcSaved && fcSaved.results) {
+        const correctTotal = FLASHCARDS_DATA.filter(c => fcSaved.results[c.id] === 'correct').length;
+        const gradedTotal = FLASHCARDS_DATA.filter(c => fcSaved.results[c.id] !== undefined).length;
+        if (fcScorePill) fcScorePill.textContent = `คะแนนสะสม: ${correctTotal} / ${FLASHCARDS_DATA.length} ใบ`;
 
-      const scorePill = document.getElementById('home-flashcard-score-pill');
-      const progressPill = document.getElementById('home-flashcard-progress-pill');
-      const mainBtnText = document.getElementById('home-fc-main-btn-text');
-      const restartBtn = document.getElementById('home-fc-restart-btn');
-
-      if (scorePill) {
-        scorePill.textContent = `คะแนนสะสม: ${correctCount} / ${FLASHCARDS_DATA.length} ใบ`;
-      }
-
-      if (savedFc && gradedCount > 0) {
-        const idx = Math.min((savedFc.index || 0) + 1, FLASHCARDS_DATA.length);
-        if (progressPill) {
-          progressPill.textContent = `ประเมินแล้ว ${gradedCount}/${FLASHCARDS_DATA.length} ใบ • อยู่ที่ใบที่ ${idx}`;
-          progressPill.classList.remove('hidden');
+        if (gradedTotal > 0 && gradedTotal < FLASHCARDS_DATA.length) {
+          const deckLen = (fcSaved.deckIds && fcSaved.deckIds.length) || FLASHCARDS_DATA.length;
+          const pos = Math.min((fcSaved.index || 0) + 1, deckLen);
+          if (fcProgPill) {
+            fcProgPill.textContent = `ประเมินแล้ว ${gradedTotal}/${FLASHCARDS_DATA.length} ใบ • ใบที่ ${pos}`;
+            fcProgPill.classList.remove('hidden');
+          }
+          if (fcMainBtn) fcMainBtn.textContent = 'ทำต่อ Flashcard เดิม';
+          if (fcRestartBtn) fcRestartBtn.classList.remove('hidden');
+        } else {
+          if (fcProgPill) fcProgPill.classList.add('hidden');
+          if (fcMainBtn) fcMainBtn.textContent = 'เปิดโหมด Flashcard ทั้งหมด';
+          if (fcRestartBtn) fcRestartBtn.classList.add('hidden');
         }
-        if (mainBtnText) mainBtnText.textContent = 'ทำต่อ Flashcard';
-        if (restartBtn) restartBtn.classList.remove('hidden');
       } else {
-        if (progressPill) progressPill.classList.add('hidden');
-        if (mainBtnText) mainBtnText.textContent = 'เปิดโหมด Flashcard ทั้งหมด';
-        if (restartBtn) restartBtn.classList.add('hidden');
+        if (fcScorePill) fcScorePill.textContent = `คะแนนสะสม: 0 / ${FLASHCARDS_DATA.length} ใบ`;
+        if (fcProgPill) fcProgPill.classList.add('hidden');
+        if (fcMainBtn) fcMainBtn.textContent = 'เปิดโหมด Flashcard ทั้งหมด';
+        if (fcRestartBtn) fcRestartBtn.classList.add('hidden');
       }
     }
 
-    function selectChapterMode(mode) {
+    function resumeSpecificSavedMode(mode) {
       const map = getInProgressMap();
-      const existing = map[mode];
-      if (existing && Array.isArray(existing.questions) && existing.questions.length > 0) {
-        openResumeChoiceModal(mode, existing);
-      } else {
-        openSetupForMode(mode);
-      }
-    }
+      const session = map[mode];
+      if (!session || !Array.isArray(session.questions) || session.questions.length === 0) return;
 
-    function openResumeChoiceModal(mode, session) {
-      pendingSetupMode = mode;
-      const meta = MODE_META[mode] || MODE_META.final60;
-      const answered = Object.keys(session.userAnswers || {}).length;
-      const total = session.questions.length;
-      const qPos = (session.currentIndex || 0) + 1;
-
-      document.getElementById('resume-modal-desc').textContent =
-        `คุณมีรายการ "${meta.shortName}" ที่ทำค้างไว้ (${answered}/${total} ข้อ, ค้างอยู่ที่ข้อ ${qPos}) ต้องการทำต่อจากเดิมหรือเริ่มใหม่ทั้งหมด?`;
-      document.getElementById('resume-modal-continue-label').textContent = `ทำต่อจากข้อ ${qPos}`;
-      document.getElementById('resume-choice-modal').classList.remove('hidden');
-    }
-
-    function closeResumeChoiceModal() {
-      pendingSetupMode = null;
-      document.getElementById('resume-choice-modal').classList.add('hidden');
-    }
-
-    function confirmResumeFromModal() {
-      const mode = pendingSetupMode;
-      closeResumeChoiceModal();
-      if (mode) resumeSavedQuiz(mode);
-    }
-
-    function confirmStartFreshFromModal() {
-      const mode = pendingSetupMode;
-      closeResumeChoiceModal();
-      if (mode) {
-        clearInProgressForMode(mode);
-        openSetupForMode(mode);
-      }
-    }
-
-    function resumeSavedQuiz(modeOverride) {
-      const targetMode = modeOverride || activeBannerSessionMode;
-      const map = getInProgressMap();
-      const session = map[targetMode];
-      if (!session || !Array.isArray(session.questions) || session.questions.length === 0) {
-        openSetupForMode(targetMode || 'final60');
-        return;
-      }
-
-      currentChapterMode = session.baseMode || session.mode || 'final60';
+      currentChapterMode = session.baseMode || (mode === 'retry' ? 'final60' : mode);
       examFeedbackMode = session.feedbackMode || 'instant';
       activeQuestions = session.questions;
       currentIndex = Math.min(session.currentIndex || 0, activeQuestions.length - 1);
       userAnswers = session.userAnswers || {};
-      isRetryMode = Boolean(session.isRetryMode);
+      isRetryMode = Boolean(session.isRetryMode || mode === 'retry');
       secondsRemaining = typeof session.secondsRemaining === 'number' ? session.secondsRemaining : 180 * 60;
+
+      renderQuestionNavPills();
+      renderQuestion();
+      showOnlyView('quiz-view');
 
       if (examFeedbackMode === 'exam') {
         startExamTimer();
-      } else {
-        stopExamTimer();
       }
+    }
 
-      setSaveStatus('unsaved');
-      showOnlyView('quiz-view');
-      renderQuestion();
+    function resumeSavedQuiz() {
+      const targetMode = activeBannerSessionMode || 'final60';
+      resumeSpecificSavedMode(targetMode);
     }
 
     function restartFromSavedMode() {
       const targetMode = activeBannerSessionMode || 'final60';
+      const map = getInProgressMap();
+      const session = map[targetMode];
+      const setupMode = (session && session.baseMode)
+        ? session.baseMode
+        : (targetMode === 'retry' ? 'final60' : targetMode);
       clearInProgressForMode(targetMode);
       updateHomeProgressIndicators();
-      openSetupForMode(targetMode);
+      openSetupForMode(setupMode);
     }
 
     function discardInProgressState() {
@@ -2775,79 +2786,104 @@
         clearInProgressForMode(activeBannerSessionMode);
       }
       updateHomeProgressIndicators();
-      flashSavedProgressUI('Saved • ลบรายการค้างไว้แล้ว');
+      flashSavedProgressUI('Saved');
+    }
+
+    function selectChapterMode(mode) {
+      const map = getInProgressMap();
+      const existing = map[mode];
+      if (existing && Array.isArray(existing.questions) && existing.questions.length > 0) {
+        pendingSetupMode = mode;
+        const total = existing.questions.length;
+        const answered = existing.questions.filter(q => existing.userAnswers && existing.userAnswers[q.id] !== undefined).length;
+        const meta = MODE_META[mode] || MODE_META.final60;
+        document.getElementById('resume-modal-desc').textContent =
+          `คุณมี "${meta.shortName}" ที่ทำค้างไว้ (${answered}/${total} ข้อ, ค้างอยู่ที่ข้อ ${(existing.currentIndex || 0) + 1}) ต้องการทำต่อหรือเริ่มใหม่?`;
+        document.getElementById('resume-modal-continue-label').textContent = `ทำต่อจากข้อ ${(existing.currentIndex || 0) + 1}`;
+        document.getElementById('resume-choice-modal').classList.remove('hidden');
+        return;
+      }
+      openSetupForMode(mode);
+    }
+
+    function confirmResumeFromModal() {
+      const mode = pendingSetupMode;
+      closeResumeChoiceModal();
+      if (mode) resumeSpecificSavedMode(mode);
+    }
+
+    function confirmStartFreshFromModal() {
+      const mode = pendingSetupMode;
+      closeResumeChoiceModal();
+      if (mode) {
+        clearInProgressForMode(mode);
+        updateHomeProgressIndicators();
+        openSetupForMode(mode);
+      }
+    }
+
+    function closeResumeChoiceModal() {
+      pendingSetupMode = null;
+      document.getElementById('resume-choice-modal').classList.add('hidden');
     }
 
     // =========================================================================
-    // 8. SETUP VIEW LOGIC
+    // 8. SETUP VIEW & STARTING A QUIZ
     // =========================================================================
     function openSetupForMode(mode) {
       currentChapterMode = mode;
+      isRetryMode = false;
       const meta = MODE_META[mode] || MODE_META.final60;
 
       document.getElementById('setup-chapter-tag').textContent = meta.tag;
       document.getElementById('setup-chapter-title').textContent = meta.title;
-      document.getElementById('topic-warning').classList.add('hidden');
 
-      let filteredTopics = [];
-      if (mode === 'final60') {
-        filteredTopics = ALL_TOPICS.filter(t => t.group === 'final60');
-      } else if (mode === 'ch8') {
-        filteredTopics = ALL_TOPICS.filter(t => t.group === 'ch8');
-      } else if (mode === 'ch9') {
-        filteredTopics = ALL_TOPICS.filter(t => t.group === 'ch9');
-      } else {
-        filteredTopics = ALL_TOPICS.filter(t => t.group === 'ch8' || t.group === 'ch9');
-      }
+      const filteredTopics = ALL_TOPICS.filter(t => {
+        if (mode === 'all') return t.group === 'ch8' || t.group === 'ch9';
+        return t.group === mode;
+      });
 
       const topicListEl = document.getElementById('topic-list');
       topicListEl.innerHTML = filteredTopics.map(t => `
-        <label class="flex items-start gap-3 p-3.5 rounded-2xl border border-slate-200 hover:border-cbs-400 bg-cbs-50/30 cursor-pointer transition">
-          <input type="checkbox" name="selected-topic" value="${t.id}" checked onchange="updateSelectedTopicCount()" class="mt-1 w-4 h-4 accent-cbs-600 rounded cursor-pointer" />
+        <label class="flex items-start gap-3 p-3.5 rounded-2xl border border-slate-200 hover:border-cbs-400 bg-white cursor-pointer transition">
+          <input type="checkbox" name="topic-checkbox" value="${t.id}" checked onchange="updateSelectedQuestionCount()" class="mt-0.5 w-4 h-4 accent-cbs-600 rounded cursor-pointer" />
           <div class="space-y-0.5">
-            <div class="text-xs sm:text-sm font-bold text-slate-900">${escapeHtml(t.nameEn)}</div>
-            <div class="text-xs text-slate-500">${escapeHtml(t.nameTh)}</div>
+            <span class="block text-xs sm:text-sm font-bold text-slate-900">${escapeHtml(t.nameEn)}</span>
+            <span class="block text-xs text-slate-500">${escapeHtml(t.nameTh)}</span>
           </div>
         </label>
       `).join('');
 
-      updateSelectedTopicCount();
-      setSaveStatus('autosave');
+      document.getElementById('topic-warning').classList.add('hidden');
+      updateSelectedQuestionCount();
       showOnlyView('setup-view');
     }
 
-    function toggleAllTopics(checked) {
-      const checkboxes = document.querySelectorAll('input[name="selected-topic"]');
-      checkboxes.forEach(cb => { cb.checked = checked; });
-      updateSelectedTopicCount();
+    function toggleAllTopics(selectAll) {
+      const boxes = document.querySelectorAll('input[name="topic-checkbox"]');
+      boxes.forEach(cb => {
+        cb.checked = selectAll;
+      });
+      updateSelectedQuestionCount();
     }
 
     function getSelectedTopicIds() {
-      return Array.from(document.querySelectorAll('input[name="selected-topic"]:checked')).map(cb => cb.value);
+      return Array.from(document.querySelectorAll('input[name="topic-checkbox"]:checked')).map(cb => cb.value);
     }
 
-    function getQuestionsForTopics(topicIds) {
+    function updateSelectedQuestionCount() {
+      const selectedIds = getSelectedTopicIds();
       const pool = currentChapterMode === 'final60' ? FINAL_60_QUESTIONS : QUIZ_BANK_CH8_9;
-      return pool.filter(q => topicIds.includes(q.topic));
-    }
-
-    function updateSelectedTopicCount() {
-      const topicIds = getSelectedTopicIds();
-      const matching = getQuestionsForTopics(topicIds);
-      document.getElementById('selected-count-badge').textContent = `${matching.length} ข้อ`;
-      if (matching.length > 0) {
+      const count = pool.filter(q => selectedIds.includes(q.topic)).length;
+      document.getElementById('selected-count-badge').textContent = `${count} ข้อ`;
+      if (count > 0) {
         document.getElementById('topic-warning').classList.add('hidden');
       }
     }
 
-    // =========================================================================
-    // 9. ACTIVE QUIZ ENGINE
-    // =========================================================================
     function startQuiz() {
-      const topicIds = getSelectedTopicIds();
-      const rawPool = getQuestionsForTopics(topicIds);
-
-      if (rawPool.length === 0) {
+      const selectedIds = getSelectedTopicIds();
+      if (selectedIds.length === 0) {
         document.getElementById('topic-warning').classList.remove('hidden');
         return;
       }
@@ -2855,64 +2891,70 @@
       const modeRadio = document.querySelector('input[name="feedback-mode"]:checked');
       examFeedbackMode = modeRadio ? modeRadio.value : 'instant';
       const shouldShuffleQ = document.getElementById('shuffle-questions').checked;
-      const shouldShuffleOpt = document.getElementById('shuffle-options').checked;
+      const shouldShuffleOpts = document.getElementById('shuffle-options').checked;
 
-      let prepared = rawPool.map(q => ({
-        ...q,
-        options: shouldShuffleOpt ? shuffleArray(q.options) : [...q.options]
-      }));
+      const pool = currentChapterMode === 'final60' ? FINAL_60_QUESTIONS : QUIZ_BANK_CH8_9;
+      let selectedQuestions = pool.filter(q => selectedIds.includes(q.topic));
 
       if (shouldShuffleQ) {
-        prepared = shuffleArray(prepared);
+        selectedQuestions = shuffleArray(selectedQuestions);
       }
 
-      activeQuestions = prepared;
+      activeQuestions = selectedQuestions.map(q => ({
+        ...q,
+        options: shouldShuffleOpts ? shuffleArray(q.options) : [...q.options]
+      }));
+
       currentIndex = 0;
       userAnswers = {};
       isRetryMode = false;
-
-      if (examFeedbackMode === 'exam') {
-        secondsRemaining = currentChapterMode === 'final60'
-          ? 180 * 60
-          : Math.max(15, activeQuestions.length * 2) * 60;
-        startExamTimer();
-      } else {
-        stopExamTimer();
-      }
+      secondsRemaining = 180 * 60;
 
       saveCurrentQuizProgress();
-      setSaveStatus('unsaved');
-      showOnlyView('quiz-view');
+      renderQuestionNavPills();
       renderQuestion();
+      showOnlyView('quiz-view');
+
+      if (examFeedbackMode === 'exam') {
+        startExamTimer();
+      }
     }
 
-    function startExamTimer() {
-      stopExamTimer();
-      updateTimerDisplay();
-      timerInterval = setInterval(() => {
-        secondsRemaining--;
-        updateTimerDisplay();
-        if (secondsRemaining <= 0) {
-          stopExamTimer();
-          finishQuiz();
+    // =========================================================================
+    // 9. ACTIVE QUIZ RENDERING & INTERACTION
+    // =========================================================================
+    function renderQuestionNavPills() {
+      const container = document.getElementById('question-nav-pills');
+      if (!container) return;
+
+      container.innerHTML = activeQuestions.map((q, idx) => {
+        const chosen = userAnswers[q.id];
+        const isCurrent = idx === currentIndex;
+        let classes = 'w-7 h-7 rounded-full text-xs font-semibold shrink-0 transition flex items-center justify-center border ';
+
+        if (chosen === undefined) {
+          classes += isCurrent
+            ? 'bg-cbs-600 text-white border-cbs-600 ring-2 ring-cbs-200'
+            : 'bg-white text-slate-600 border-slate-200 hover:border-cbs-400';
+        } else if (examFeedbackMode === 'exam') {
+          classes += isCurrent
+            ? 'bg-cbs-700 text-white border-cbs-700 ring-2 ring-cbs-200'
+            : 'bg-cbs-100 text-cbs-800 border-cbs-300';
+        } else {
+          const isRight = q.options[chosen] && q.options[chosen].isCorrect;
+          if (isRight) {
+            classes += isCurrent
+              ? 'bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-200'
+              : 'bg-emerald-50 text-emerald-700 border-emerald-300';
+          } else {
+            classes += isCurrent
+              ? 'bg-rose-600 text-white border-rose-600 ring-2 ring-rose-200'
+              : 'bg-rose-50 text-rose-700 border-rose-300';
+          }
         }
-      }, 1000);
-    }
 
-    function stopExamTimer() {
-      if (timerInterval) {
-        clearInterval(timerInterval);
-        timerInterval = null;
-      }
-    }
-
-    function updateTimerDisplay() {
-      const mins = Math.floor(Math.max(0, secondsRemaining) / 60);
-      const secs = Math.max(0, secondsRemaining) % 60;
-      const display = document.getElementById('timer-display');
-      if (display) {
-        display.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-      }
+        return `<button type="button" onclick="jumpToQuestion(${idx})" class="${classes}">${idx + 1}</button>`;
+      }).join('');
     }
 
     function renderQuestion() {
@@ -2920,7 +2962,7 @@
       if (!q) return;
 
       const total = activeQuestions.length;
-      const answeredCount = Object.keys(userAnswers).length;
+      const answeredCount = activeQuestions.filter(item => userAnswers[item.id] !== undefined).length;
       let correctCount = 0;
       activeQuestions.forEach(item => {
         const chosen = userAnswers[item.id];
@@ -2929,130 +2971,105 @@
         }
       });
 
+      // Update Header Save Status Pill based on whether the current question is answered
+      if (userAnswers[q.id] !== undefined) {
+        setSaveStatus('saved', `Saved • บันทึกแล้ว ${answeredCount}/${total} ข้อ`);
+      } else {
+        setSaveStatus('unsaved', `ยังไม่ได้บันทึก - บันทึกแล้ว ${answeredCount}/${total} ข้อ`);
+      }
+
       // Header pills
       const modeBadge = document.getElementById('quiz-mode-badge');
       modeBadge.textContent = examFeedbackMode === 'exam' ? 'Simulated Exam Mode' : 'Practice Mode';
-      modeBadge.className = examFeedbackMode === 'exam'
-        ? 'text-xs font-semibold px-3.5 py-1 rounded-full bg-chula-500 text-white'
-        : 'text-xs font-semibold px-3.5 py-1 rounded-full bg-cbs-600 text-white';
 
       document.getElementById('quiz-counter-text').textContent = `Question ${currentIndex + 1} / ${total}`;
 
-      const liveStatus = document.getElementById('live-status-text');
+      const liveStatusText = document.getElementById('live-status-text');
       if (examFeedbackMode === 'exam') {
-        liveStatus.innerHTML = `Answered: <span class="text-cbs-700 font-bold">${answeredCount}</span> / ${total}`;
+        liveStatusText.innerHTML = `Answered: <span class="text-cbs-800 font-bold">${answeredCount}</span> / ${total}`;
       } else {
-        liveStatus.innerHTML = `Score: <span id="live-score" class="text-emerald-600 font-bold">${correctCount}</span> / <span id="live-answered">${answeredCount}</span>`;
+        liveStatusText.innerHTML = `Score: <span id="live-score">${correctCount}</span> / <span id="live-answered">${answeredCount}</span>`;
       }
 
       const pct = Math.round(((currentIndex + 1) / total) * 100);
       document.getElementById('quiz-progress-bar').style.width = `${pct}%`;
 
-      // Question Navigator Pills
-      const navContainer = document.getElementById('question-nav-pills');
-      navContainer.innerHTML = activeQuestions.map((item, idx) => {
-        const chosen = userAnswers[item.id];
-        const isCurrent = idx === currentIndex;
-        let pillClass = 'bg-white text-slate-600 border-slate-200 hover:border-cbs-400';
-
-        if (chosen !== undefined) {
-          if (examFeedbackMode === 'instant') {
-            const isRight = item.options[chosen] && item.options[chosen].isCorrect;
-            pillClass = isRight
-              ? 'bg-emerald-500 text-white border-emerald-500'
-              : 'bg-rose-500 text-white border-rose-500';
-          } else {
-            pillClass = 'bg-cbs-600 text-white border-cbs-600';
-          }
-        }
-        if (isCurrent) {
-          pillClass += ' ring-2 ring-cbs-400 ring-offset-1 font-bold';
-        }
-
-        return `<button type="button" onclick="jumpToQuestion(${idx})" class="w-7 h-7 rounded-full border text-xs shrink-0 transition flex items-center justify-center ${pillClass}">${idx + 1}</button>`;
-      }).join('');
-
-      // Active pill scroll into view
-      const activePill = navContainer.children[currentIndex];
-      if (activePill && activePill.scrollIntoView) {
-        activePill.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-      }
-
-      // Question stem
       document.getElementById('question-number-label').textContent = `Question ${currentIndex + 1}`;
       document.getElementById('question-source-label').textContent = q.source || '';
       document.getElementById('question-title-en').textContent = q.questionEn;
 
-      // Options
-      const selectedIdx = userAnswers[q.id];
-      const hasAnswered = selectedIdx !== undefined;
+      // Render Options
       const letters = ['A', 'B', 'C', 'D'];
+      const chosenIdx = userAnswers[q.id];
+      const showInstantFeedback = examFeedbackMode === 'instant' && chosenIdx !== undefined;
+
       const optionsContainer = document.getElementById('options-container');
-
       optionsContainer.innerHTML = q.options.map((opt, idx) => {
-        const isSelected = selectedIdx === idx;
-        let cardClass = 'border-slate-200 bg-white hover:border-cbs-400 hover:bg-cbs-50/40 text-slate-800';
-        let badgeClass = 'bg-slate-100 text-slate-700';
+        const isSelected = chosenIdx === idx;
+        let cardClass = 'w-full text-left p-4 rounded-2xl border-2 transition flex items-start gap-3.5 ';
+        let badgeClass = 'w-7 h-7 rounded-full text-xs font-bold flex items-center justify-center shrink-0 mt-0.5 ';
 
-        if (examFeedbackMode === 'instant' && hasAnswered) {
-          if (opt.isCorrect) {
-            cardClass = 'border-emerald-500 bg-emerald-50/70 text-emerald-950 font-medium';
-            badgeClass = 'bg-emerald-600 text-white';
-          } else if (isSelected && !opt.isCorrect) {
-            cardClass = 'border-rose-400 bg-rose-50/70 text-rose-950';
-            badgeClass = 'bg-rose-600 text-white';
+        if (!showInstantFeedback) {
+          if (isSelected) {
+            cardClass += 'border-cbs-600 bg-cbs-50/80 text-slate-900 shadow-xs';
+            badgeClass += 'bg-cbs-600 text-white';
           } else {
-            cardClass = 'border-slate-200/70 bg-slate-50/50 text-slate-400';
-            badgeClass = 'bg-slate-100 text-slate-400';
+            cardClass += 'border-slate-200 hover:border-cbs-400 bg-white hover:bg-cbs-50/30 text-slate-800';
+            badgeClass += 'bg-slate-100 text-slate-700';
           }
-        } else if (isSelected) {
-          cardClass = 'border-cbs-600 bg-cbs-50/70 text-cbs-950 font-medium ring-1 ring-cbs-600';
-          badgeClass = 'bg-cbs-600 text-white';
+        } else {
+          if (opt.isCorrect) {
+            cardClass += 'border-emerald-500 bg-emerald-50/70 text-emerald-950';
+            badgeClass += 'bg-emerald-600 text-white';
+          } else if (isSelected) {
+            cardClass += 'border-rose-500 bg-rose-50/70 text-rose-950';
+            badgeClass += 'bg-rose-600 text-white';
+          } else {
+            cardClass += 'border-slate-200/70 bg-slate-50/50 text-slate-500';
+            badgeClass += 'bg-slate-100 text-slate-400';
+          }
         }
 
-        const disabledAttr = (examFeedbackMode === 'instant' && hasAnswered) ? 'disabled' : '';
         return `
-          <button type="button" ${disabledAttr} onclick="selectOption(${idx})" class="w-full text-left p-4 rounded-2xl border-2 transition flex items-start gap-3.5 ${cardClass}">
-            <span class="w-7 h-7 rounded-full text-xs font-bold flex items-center justify-center shrink-0 mt-0.5 ${badgeClass}">${letters[idx]}</span>
-            <span class="text-xs sm:text-sm leading-relaxed">${escapeHtml(opt.text)}</span>
+          <button type="button" onclick="selectOption(${idx})" class="${cardClass}">
+            <span class="${badgeClass}">${letters[idx]}</span>
+            <span class="text-sm sm:text-base font-medium leading-snug">${escapeHtml(opt.text)}</span>
           </button>
         `;
       }).join('');
 
       // Instant Feedback Box
       const feedbackBox = document.getElementById('feedback-box');
-      if (examFeedbackMode === 'instant' && hasAnswered) {
-        const chosenOpt = q.options[selectedIdx];
-        const isCorrect = chosenOpt && chosenOpt.isCorrect;
+      if (showInstantFeedback) {
+        const chosenOpt = q.options[chosenIdx];
+        const isRight = chosenOpt && chosenOpt.isCorrect;
 
-        feedbackBox.classList.remove('hidden');
-        feedbackBox.className = isCorrect
-          ? 'rounded-2xl p-5 border border-emerald-200 bg-emerald-50/70 text-emerald-950 transition-all space-y-3'
-          : 'rounded-2xl p-5 border border-rose-200 bg-rose-50/70 text-rose-950 transition-all space-y-3';
-
+        feedbackBox.classList.remove('hidden', 'bg-emerald-50/80', 'border-emerald-200', 'text-emerald-950', 'bg-rose-50/80', 'border-rose-200', 'text-rose-950');
         const iconEl = document.getElementById('feedback-icon');
-        iconEl.className = isCorrect
-          ? 'w-7 h-7 rounded-full flex items-center justify-center shrink-0 font-bold text-sm bg-emerald-600 text-white'
-          : 'w-7 h-7 rounded-full flex items-center justify-center shrink-0 font-bold text-sm bg-rose-600 text-white';
-        iconEl.textContent = isCorrect ? '✓' : '✕';
 
-        document.getElementById('feedback-heading').textContent = isCorrect
-          ? 'ถูกต้อง! (Correct)'
-          : 'ยังไม่ถูกต้อง (Incorrect)';
-        document.getElementById('feedback-sub').textContent = isCorrect
-          ? 'เยี่ยมมาก คุณเลือกคำตอบได้ถูกต้อง'
-          : `คำตอบที่ถูกต้องคือข้อ ${letters[q.options.findIndex(o => o.isCorrect)]}`;
+        if (isRight) {
+          feedbackBox.classList.add('bg-emerald-50/80', 'border-emerald-200', 'text-emerald-950');
+          iconEl.className = 'w-7 h-7 rounded-full flex items-center justify-center shrink-0 font-bold text-sm bg-emerald-600 text-white';
+          iconEl.textContent = '✓';
+          document.getElementById('feedback-heading').textContent = 'ถูกต้อง! (Correct)';
+          document.getElementById('feedback-sub').textContent = 'เยี่ยมมาก คุณเลือกคำตอบที่ถูกต้อง';
+        } else {
+          feedbackBox.classList.add('bg-rose-50/80', 'border-rose-200', 'text-rose-950');
+          iconEl.className = 'w-7 h-7 rounded-full flex items-center justify-center shrink-0 font-bold text-sm bg-rose-600 text-white';
+          iconEl.textContent = '✕';
+          document.getElementById('feedback-heading').textContent = 'ยังไม่ถูกต้อง (Incorrect)';
+          const rightIdx = q.options.findIndex(o => o.isCorrect);
+          document.getElementById('feedback-sub').textContent = `คำตอบที่ถูกต้องคือข้อ ${letters[rightIdx]}`;
+        }
 
         document.getElementById('feedback-explanation-main').textContent = q.explanationMain;
 
-        const distractorsHtml = q.options
-          .map((o, idx) => {
-            if (o.isCorrect) return '';
-            const reason = o.whyWrong || 'ตัวเลือกนี้ไม่สอดคล้องกับหลักการทางการเงินในโจทย์';
-            return `<div><strong class="text-slate-800">${letters[idx]}:</strong> <span class="text-slate-600">${escapeHtml(reason)}</span></div>`;
-          })
-          .filter(Boolean)
-          .join('');
+        const distractorsHtml = q.options.map((opt, idx) => {
+          if (opt.isCorrect) {
+            return `<div class="text-emerald-800"><strong>✓ ข้อ ${letters[idx]}:</strong> ${escapeHtml(opt.text)} — <em>คำตอบที่ถูกต้อง</em></div>`;
+          }
+          return `<div class="text-slate-600"><strong>• ข้อ ${letters[idx]}:</strong> ${escapeHtml(opt.whyWrong || 'ตัวลวง')}</div>`;
+        }).join('');
         document.getElementById('feedback-distractors').innerHTML = distractorsHtml;
       } else {
         feedbackBox.classList.add('hidden');
@@ -3060,8 +3077,9 @@
 
       // Navigation buttons
       document.getElementById('prev-btn').disabled = currentIndex === 0;
-      document.getElementById('next-btn-text').textContent =
-        currentIndex === total - 1 ? 'ส่งคำตอบ & ดูผลสอบ →' : 'Next →';
+      document.getElementById('next-btn-text').textContent = currentIndex === total - 1 ? 'Finish & Submit →' : 'Next →';
+
+      renderQuestionNavPills();
     }
 
     function selectOption(optIdx) {
@@ -3070,14 +3088,6 @@
       if (examFeedbackMode === 'instant' && userAnswers[q.id] !== undefined) return;
 
       userAnswers[q.id] = optIdx;
-      saveCurrentQuizProgress();
-      renderQuestion();
-      flashSavedProgressUI(`Saved • บันทึกข้อ ${currentIndex + 1} แล้ว`);
-    }
-
-    function jumpToQuestion(idx) {
-      if (idx < 0 || idx >= activeQuestions.length) return;
-      currentIndex = idx;
       saveCurrentQuizProgress();
       renderQuestion();
     }
@@ -3100,206 +3110,231 @@
       }
     }
 
+    function jumpToQuestion(idx) {
+      if (idx >= 0 && idx < activeQuestions.length) {
+        currentIndex = idx;
+        saveCurrentQuizProgress();
+        renderQuestion();
+      }
+    }
+
     // =========================================================================
-    // 10. FINISH QUIZ & RESULTS DASHBOARD
+    // 10. SUBMITTING QUIZ & RESULTS VIEW
     // =========================================================================
     function finishQuiz() {
       stopExamTimer();
-      isFlashcardResultMode = false;
 
       const total = activeQuestions.length;
       let score = 0;
       const wrongQuestions = [];
-      const topicStats = {}; // { [topicId]: { correct, total } }
+      const topicStats = {};
+      const itemRecords = [];
 
-      const detailedItems = activeQuestions.map((q, idx) => {
+      activeQuestions.forEach(q => {
         const chosenIdx = userAnswers[q.id];
-        const correctIdx = q.options.findIndex(o => o.isCorrect);
-        const isCorrect = chosenIdx !== undefined && chosenIdx === correctIdx;
+        const isCorrect = chosenIdx !== undefined && q.options[chosenIdx] && q.options[chosenIdx].isCorrect;
+        if (isCorrect) {
+          score++;
+        } else {
+          wrongQuestions.push(q);
+        }
 
         if (!topicStats[q.topic]) {
           topicStats[q.topic] = { correct: 0, total: 0 };
         }
         topicStats[q.topic].total++;
+        if (isCorrect) topicStats[q.topic].correct++;
 
-        if (isCorrect) {
-          score++;
-          topicStats[q.topic].correct++;
-        } else {
-          wrongQuestions.push(q);
-        }
-
-        return {
-          index: idx + 1,
+        itemRecords.push({
           question: q,
           chosenIdx,
-          correctIdx,
-          isCorrect
-        };
+          isCorrect,
+          isFlashcard: false
+        });
       });
 
-      const percent = total > 0 ? Math.round((score / total) * 100) : 0;
+      const pct = total > 0 ? Math.round((score / total) * 100) : 0;
       const modeKey = isRetryMode ? 'retry' : currentChapterMode;
-      const meta = MODE_META[modeKey] || MODE_META.final60;
+      const modeMeta = MODE_META[modeKey] || MODE_META.final60;
 
-      // Save to History
-      const historyList = getHistoryList();
-      historyList.unshift({
+      // Save attempt to cumulative history
+      const history = getHistoryList();
+      history.unshift({
         id: 'att_' + Date.now(),
         timestamp: Date.now(),
         mode: modeKey,
-        title: meta.shortName,
+        modeLabel: modeMeta.shortName,
         score,
         total,
-        percent,
+        percent: pct,
         topicStats,
         wrongQuestionIds: wrongQuestions.map(q => q.id)
       });
-      saveHistoryList(historyList);
+      saveHistoryList(history.slice(0, 100));
 
       // Clear in-progress session for this mode
       clearInProgressForMode(modeKey);
+      updateHomeProgressIndicators();
 
       lastResultsData = {
-        mode: modeKey,
-        title: meta.shortName,
+        isFlashcard: false,
+        title: modeMeta.shortName,
         score,
         total,
-        percent,
+        percent: pct,
         topicStats,
         wrongQuestions,
-        detailedItems,
-        isFlashcard: false
+        itemRecords
       };
 
-      setSaveStatus('saved', 'Saved');
-      renderResultsView(lastResultsData);
+      renderResultsDashboard();
       showOnlyView('results-view');
+      setSaveStatus('saved', 'Saved');
     }
 
-    function renderResultsView(data) {
-      document.getElementById('result-badge').textContent = data.isFlashcard ? 'ผลทดสอบ Flashcard' : 'ผลการสอบ';
-      document.getElementById('final-score').textContent = data.score;
-      document.getElementById('final-total').textContent = data.total;
-      document.getElementById('final-percent').textContent = `${data.percent}%`;
+    function renderResultsDashboard() {
+      if (!lastResultsData) return;
+      const { isFlashcard, title, score, total, percent, topicStats, wrongQuestions, itemRecords } = lastResultsData;
 
-      let headline = 'ทำได้ดี! ลองทบทวนจุดที่พลาดอีกนิดเพื่อคะแนนเต็ม';
-      if (data.percent >= 85) {
-        headline = 'ยอดเยี่ยมมาก! พร้อมลุยข้อสอบปลายภาคอย่างมั่นใจ';
-      } else if (data.percent < 60) {
-        headline = 'ทบทวนสูตรและหลักการในจุดที่พลาด แล้วลองทำใหม่อีกครั้งนะ!';
+      document.getElementById('result-badge').textContent = title;
+      document.getElementById('final-score').textContent = score;
+      document.getElementById('final-total').textContent = total;
+      document.getElementById('final-percent').textContent = `${percent}%`;
+
+      if (percent >= 80) {
+        document.getElementById('result-title').textContent = 'ยอดเยี่ยมมาก! ความแม่นยำระดับท็อป';
+        document.getElementById('result-subtitle').textContent = 'คุณเข้าใจเนื้อหาและสูตรสำคัญได้เป็นอย่างดี พร้อมสำหรับสนามสอบจริง';
+      } else if (percent >= 60) {
+        document.getElementById('result-title').textContent = 'ทำได้ดี! ทบทวนจุดที่พลาดอีกนิดจะยิ่งมั่นใจ';
+        document.getElementById('result-subtitle').textContent = 'ลองกดทบทวนเฉพาะข้อที่ตอบผิดด้านล่างเพื่อปิดจุดอ่อนให้ครบทุกบท';
+      } else {
+        document.getElementById('result-title').textContent = 'เริ่มต้นได้ดี! มาทบทวนเฉลยละเอียดทีละข้อกัน';
+        document.getElementById('result-subtitle').textContent = 'อ่านคำอธิบายและวิธีคำนวณด้านล่าง แล้วลองฝึกซ้ำเฉพาะข้อที่ผิดอีกครั้ง';
       }
-      document.getElementById('result-title').textContent = headline;
-      document.getElementById('result-subtitle').textContent = `${data.title} • ตรวจสอบคะแนนแยกตามบทเรียนและอ่านเฉลยละเอียดด้านล่าง`;
 
-      // Retry wrong button
       const retryBtn = document.getElementById('retry-wrong-btn');
-      const wrongCount = data.wrongQuestions.length;
-      if (wrongCount > 0) {
+      if (wrongQuestions.length > 0) {
         retryBtn.classList.remove('hidden');
-        document.getElementById('retry-wrong-btn-text').innerHTML = data.isFlashcard
-          ? `ทบทวนเฉพาะการ์ดที่ตอบผิด (<span>${wrongCount}</span> ใบ)`
-          : `ทบทวนเฉพาะข้อที่ตอบผิด (<span id="wrong-count-label">${wrongCount}</span> ข้อ)`;
+        document.getElementById('retry-wrong-btn-text').textContent =
+          isFlashcard
+            ? `ทบทวนเฉพาะการ์ดที่ตอบผิด (${wrongQuestions.length} ใบ)`
+            : `ทบทวนเฉพาะข้อที่ตอบผิด (${wrongQuestions.length} ข้อ)`;
       } else {
         retryBtn.classList.add('hidden');
       }
 
-      // Topic breakdown
-      const breakdownEl = document.getElementById('topic-breakdown-container');
-      const entries = Object.entries(data.topicStats);
-      breakdownEl.innerHTML = entries.map(([topicId, st]) => {
-        const topicMeta = ALL_TOPICS.find(t => t.id === topicId) ||
-          FLASHCARD_LECTURE_META[topicId] ||
-          { nameEn: topicId, nameTh: '' };
-        const acc = st.total > 0 ? Math.round((st.correct / st.total) * 100) : 0;
-        const barColor = acc >= 80 ? 'bg-emerald-500' : acc >= 50 ? 'bg-cbs-600' : 'bg-chula-500';
+      document.getElementById('restart-same-btn').textContent = isFlashcard ? 'เริ่มชุด Flashcard ใหม่' : 'ทำชุดเดิมอีกครั้ง';
+
+      // Topic Breakdown Cards
+      const breakdownContainer = document.getElementById('topic-breakdown-container');
+      const topicKeys = Object.keys(topicStats);
+      breakdownContainer.innerHTML = topicKeys.map(tKey => {
+        const st = topicStats[tKey];
+        const tPct = st.total > 0 ? Math.round((st.correct / st.total) * 100) : 0;
+        let labelEn = tKey;
+        let labelTh = '';
+
+        if (isFlashcard) {
+          const fMeta = FLASHCARD_LECTURE_META[tKey];
+          labelEn = fMeta ? fMeta.nameEn : tKey;
+          labelTh = fMeta ? fMeta.nameTh : '';
+        } else {
+          const tObj = ALL_TOPICS.find(t => t.id === tKey);
+          labelEn = tObj ? tObj.nameEn : tKey;
+          labelTh = tObj ? tObj.nameTh : '';
+        }
+
+        const barColor = tPct >= 80 ? 'bg-emerald-500' : (tPct >= 50 ? 'bg-cbs-600' : 'bg-chula-500');
+
         return `
-          <div class="p-4 rounded-2xl bg-cbs-50/40 border border-slate-200/80 space-y-2">
+          <div class="p-4 rounded-2xl border border-slate-200/80 bg-slate-50/40 space-y-2.5">
             <div class="flex items-start justify-between gap-2">
               <div>
-                <div class="text-xs sm:text-sm font-bold text-slate-900">${escapeHtml(topicMeta.nameEn)}</div>
-                <div class="text-[11px] text-slate-500">${escapeHtml(topicMeta.nameTh || '')}</div>
+                <div class="text-xs sm:text-sm font-bold text-slate-900">${escapeHtml(labelEn)}</div>
+                ${labelTh ? `<div class="text-xs text-slate-500 mt-0.5">${escapeHtml(labelTh)}</div>` : ''}
               </div>
-              <span class="text-xs font-bold px-2.5 py-0.5 rounded-full bg-white border border-slate-200 text-slate-800 shrink-0">${st.correct}/${st.total} (${acc}%)</span>
+              <span class="text-xs font-bold px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-800 shrink-0">${st.correct}/${st.total} (${tPct}%)</span>
             </div>
-            <div class="w-full h-2 bg-white rounded-full overflow-hidden border border-slate-200/70">
-              <div class="h-full ${barColor} rounded-full" style="width: ${acc}%;"></div>
+            <div class="w-full h-2 bg-slate-200/70 rounded-full overflow-hidden">
+              <div class="h-full ${barColor} rounded-full transition-all" style="width: ${tPct}%;"></div>
             </div>
           </div>
         `;
       }).join('');
 
       currentReviewFilter = 'all';
-      renderDetailedReviewList();
+      renderDetailedReviewList(itemRecords);
     }
 
     function filterReviewList(filter) {
       currentReviewFilter = filter;
-      renderDetailedReviewList();
+      if (!lastResultsData) return;
+      renderDetailedReviewList(lastResultsData.itemRecords);
     }
 
-    function renderDetailedReviewList() {
-      if (!lastResultsData) return;
-      const listEl = document.getElementById('detailed-review-list');
-      const items = currentReviewFilter === 'wrong'
-        ? lastResultsData.detailedItems.filter(it => !it.isCorrect)
-        : lastResultsData.detailedItems;
+    function renderDetailedReviewList(records) {
+      const container = document.getElementById('detailed-review-list');
+      if (!container) return;
 
-      if (items.length === 0) {
-        listEl.innerHTML = `<div class="p-6 text-center text-sm text-slate-500 bg-slate-50 rounded-2xl">ไม่มีรายการที่ตอบผิดในชุดนี้ เยี่ยมมาก!</div>`;
-        return;
-      }
+      const filtered = currentReviewFilter === 'wrong'
+        ? records.filter(r => !r.isCorrect)
+        : records;
 
-      if (lastResultsData.isFlashcard) {
-        listEl.innerHTML = items.map(it => {
-          const card = it.card;
-          const badge = it.isCorrect
-            ? '<span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold">✓ ตอบถูก</span>'
-            : '<span class="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs font-semibold">✕ ตอบผิด / ยังไม่ประเมิน</span>';
-          return `
-            <div class="p-5 rounded-2xl border ${it.isCorrect ? 'border-emerald-200/80 bg-emerald-50/20' : 'border-rose-200 bg-rose-50/25'} space-y-2.5">
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <span class="text-xs font-bold text-cbs-700">Card #${it.index} • ${escapeHtml(card.lecture)}</span>
-                ${badge}
-              </div>
-              <div class="text-sm sm:text-base font-bold text-slate-900">${escapeHtml(card.titleEn)} (${escapeHtml(card.titleTh)})</div>
-              <div class="p-3 rounded-xl bg-white border border-cbs-200 text-sm sm:text-base font-bold text-cbs-900">${card.formulaHtml}</div>
-              <div class="text-xs sm:text-sm text-slate-700 leading-relaxed">${card.noteHtml}</div>
-            </div>
-          `;
-        }).join('');
+      if (filtered.length === 0) {
+        container.innerHTML = `<div class="p-6 text-center text-sm text-emerald-700 bg-emerald-50/60 rounded-2xl border border-emerald-200">ยอดเยี่ยม! ไม่มีข้อที่ตอบผิดในรายการนี้</div>`;
         return;
       }
 
       const letters = ['A', 'B', 'C', 'D'];
-      listEl.innerHTML = items.map(it => {
-        const q = it.question;
-        const userText = it.chosenIdx !== undefined && q.options[it.chosenIdx]
-          ? `${letters[it.chosenIdx]}. ${escapeHtml(q.options[it.chosenIdx].text)}`
-          : 'ไม่ได้เลือกคำตอบ (Skipped)';
-        const correctText = `${letters[it.correctIdx]}. ${escapeHtml(q.options[it.correctIdx].text)}`;
+      container.innerHTML = filtered.map((rec, idx) => {
+        if (rec.isFlashcard) {
+          const card = rec.card;
+          const statusBadge = rec.isCorrect
+            ? '<span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold">✓ ตอบถูก</span>'
+            : '<span class="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs font-semibold">✕ ตอบผิด</span>';
+
+          return `
+            <div class="p-5 rounded-2xl border ${rec.isCorrect ? 'border-slate-200 bg-white' : 'border-rose-200 bg-rose-50/20'} space-y-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="text-xs font-bold text-cbs-700">${escapeHtml(card.lecture)} • ${escapeHtml(card.titleEn)}</span>
+                ${statusBadge}
+              </div>
+              <div class="text-xs text-slate-500">${escapeHtml(card.titleTh)}</div>
+              <div class="p-3.5 rounded-xl bg-cbs-50/60 border border-cbs-100 text-sm sm:text-base font-bold text-cbs-900">
+                ${card.formulaHtml}
+              </div>
+              <div class="text-xs sm:text-sm text-slate-700 leading-relaxed">${card.noteHtml}</div>
+            </div>
+          `;
+        }
+
+        const q = rec.question;
+        const rightIdx = q.options.findIndex(o => o.isCorrect);
+        const userChoiceText = rec.chosenIdx !== undefined && q.options[rec.chosenIdx]
+          ? `${letters[rec.chosenIdx]}. ${q.options[rec.chosenIdx].text}`
+          : 'ไม่ได้เลือกคำตอบ';
+
+        const statusBadge = rec.isCorrect
+          ? '<span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold">✓ ถูกต้อง</span>'
+          : '<span class="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs font-semibold">✕ ผิด</span>';
 
         return `
-          <div class="p-5 rounded-2xl border ${it.isCorrect ? 'border-emerald-200/80 bg-emerald-50/20' : 'border-rose-200 bg-rose-50/25'} space-y-3">
+          <div class="p-5 rounded-2xl border ${rec.isCorrect ? 'border-slate-200 bg-white' : 'border-rose-200 bg-rose-50/20'} space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
-              <span class="text-xs font-bold text-cbs-700">Question ${it.index} • ${escapeHtml(q.source || '')}</span>
-              ${it.isCorrect
-                ? '<span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold">✓ ถูกต้อง</span>'
-                : '<span class="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs font-semibold">✕ ตอบผิด</span>'}
+              <span class="text-xs font-bold text-cbs-700">ข้อที่ ${idx + 1} • ${escapeHtml(q.source || '')}</span>
+              ${statusBadge}
             </div>
             <p class="text-sm sm:text-base font-semibold text-slate-900 leading-relaxed">${escapeHtml(q.questionEn)}</p>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs sm:text-sm">
-              <div class="p-3 rounded-xl bg-white border ${it.isCorrect ? 'border-emerald-200' : 'border-rose-200'}">
-                <span class="block text-[11px] font-semibold text-slate-400">คำตอบของคุณ:</span>
-                <span class="${it.isCorrect ? 'text-emerald-700 font-semibold' : 'text-rose-700 font-semibold'}">${userText}</span>
+              <div class="p-3 rounded-xl ${rec.isCorrect ? 'bg-emerald-50 text-emerald-900 border border-emerald-200' : 'bg-rose-50 text-rose-900 border border-rose-200'}">
+                <strong>คำตอบของคุณ:</strong> ${escapeHtml(userChoiceText)}
               </div>
-              <div class="p-3 rounded-xl bg-white border border-emerald-200">
-                <span class="block text-[11px] font-semibold text-slate-400">คำตอบที่ถูกต้อง:</span>
-                <span class="text-emerald-700 font-semibold">${correctText}</span>
+              <div class="p-3 rounded-xl bg-emerald-50 text-emerald-900 border border-emerald-200">
+                <strong>เฉลยที่ถูกต้อง:</strong> ${letters[rightIdx]}. ${escapeHtml(q.options[rightIdx].text)}
               </div>
             </div>
-            <div class="text-xs sm:text-sm text-slate-700 bg-white/90 p-3.5 rounded-xl border border-slate-200/70 leading-relaxed">
-              <strong class="text-cbs-800">คำอธิบาย:</strong> ${escapeHtml(q.explanationMain)}
+            <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs sm:text-sm text-slate-700 leading-relaxed">
+              <strong>คำอธิบาย:</strong> ${escapeHtml(q.explanationMain)}
             </div>
           </div>
         `;
@@ -3315,9 +3350,9 @@
         fcIsFlipped = false;
         fcResults = {};
         fcRoundLogged = false;
+        saveFlashcardSession();
         renderFlashcardFilterPills();
         renderFlashcard();
-        setSaveStatus('autosave');
         showOnlyView('flashcard-view');
         return;
       }
@@ -3330,12 +3365,11 @@
       userAnswers = {};
       isRetryMode = true;
       examFeedbackMode = 'instant';
-      stopExamTimer();
 
       saveCurrentQuizProgress();
-      setSaveStatus('unsaved');
-      showOnlyView('quiz-view');
+      renderQuestionNavPills();
       renderQuestion();
+      showOnlyView('quiz-view');
     }
 
     function restartSameQuiz() {
@@ -3343,39 +3377,12 @@
         startFreshFlashcards(fcFilterLecture || 'all');
         return;
       }
-      if (isRetryMode) {
-        openSetupForMode(currentChapterMode);
-      } else {
-        startQuiz();
-      }
+      openSetupForMode(currentChapterMode);
     }
 
     // =========================================================================
-    // 11. INTERACTIVE FLASHCARD ENGINE (22 CARDS)
+    // 11. INTERACTIVE FLASHCARD SYSTEM
     // =========================================================================
-    function loadFlashcardSession() {
-      try {
-        const raw = localStorage.getItem(FLASHCARD_SESSION_KEY);
-        return raw ? JSON.parse(raw) : null;
-      } catch (e) {
-        return null;
-      }
-    }
-
-    function saveFlashcardSession() {
-      try {
-        localStorage.setItem(FLASHCARD_SESSION_KEY, JSON.stringify({
-          filterLecture: fcFilterLecture,
-          deckIds: fcDeck.map(c => c.id),
-          index: fcIndex,
-          results: fcResults,
-          updatedAt: Date.now()
-        }));
-      } catch (e) {
-        // Ignore storage errors
-      }
-    }
-
     function openFlashcards(filterOrResume) {
       if (fcAutoAdvanceTimer) {
         clearTimeout(fcAutoAdvanceTimer);
@@ -3383,23 +3390,23 @@
       }
 
       if (filterOrResume === 'resume') {
-        const saved = loadFlashcardSession();
+        const saved = getFlashcardSession();
         if (saved && Array.isArray(saved.deckIds) && saved.deckIds.length > 0) {
-          fcFilterLecture = saved.filterLecture || 'all';
-          const restored = saved.deckIds
+          const restoredDeck = saved.deckIds
             .map(id => FLASHCARDS_DATA.find(c => c.id === id))
             .filter(Boolean);
-          fcDeck = restored.length > 0 ? restored : [...FLASHCARDS_DATA];
-          fcIndex = Math.min(saved.index || 0, fcDeck.length - 1);
-          fcResults = saved.results || {};
-          fcIsFlipped = false;
-          fcRoundLogged = false;
-
-          renderFlashcardFilterPills();
-          renderFlashcard();
-          setSaveStatus('autosave');
-          showOnlyView('flashcard-view');
-          return;
+          if (restoredDeck.length > 0) {
+            fcFilterLecture = saved.filterLecture || 'all';
+            fcDeck = restoredDeck;
+            fcIndex = Math.min(saved.index || 0, fcDeck.length - 1);
+            fcIsFlipped = false;
+            fcResults = saved.results || {};
+            fcRoundLogged = false;
+            renderFlashcardFilterPills();
+            renderFlashcard();
+            showOnlyView('flashcard-view');
+            return;
+          }
         }
         startFreshFlashcards('all');
         return;
@@ -3425,93 +3432,78 @@
       saveFlashcardSession();
       renderFlashcardFilterPills();
       renderFlashcard();
-      setSaveStatus('autosave');
       showOnlyView('flashcard-view');
     }
 
-    function setFlashcardLectureFilter(lec) {
-      startFreshFlashcards(lec);
-    }
-
     function renderFlashcardFilterPills() {
-      const filters = ['all', 'Lec 7', 'Lec 8', 'Lec 9', 'Lec 10', 'Lec 11', 'Lec 12'];
       const container = document.getElementById('fc-filter-pills');
       if (!container) return;
 
+      const filters = [
+        { key: 'all', label: `ทั้งหมด (${FLASHCARDS_DATA.length})` },
+        { key: 'Lec 7', label: 'Lec 7 (5)' },
+        { key: 'Lec 8', label: 'Lec 8 (4)' },
+        { key: 'Lec 9', label: 'Lec 9 (5)' },
+        { key: 'Lec 10', label: 'Lec 10 (2)' },
+        { key: 'Lec 11', label: 'Lec 11 (2)' },
+        { key: 'Lec 12', label: 'Lec 12 (4)' }
+      ];
+
       container.innerHTML = filters.map(f => {
-        const isActive = fcFilterLecture === f;
-        const count = f === 'all'
-          ? FLASHCARDS_DATA.length
-          : FLASHCARDS_DATA.filter(c => c.lecture === f).length;
-        const label = f === 'all' ? `ทั้งหมด (${count})` : `${f} (${count})`;
+        const isActive = fcFilterLecture === f.key;
         const cls = isActive
-          ? 'bg-cbs-600 text-white border-cbs-600 font-semibold'
-          : 'bg-white hover:bg-cbs-50 text-slate-700 border-slate-200 font-medium';
-        return `<button type="button" onclick="setFlashcardLectureFilter('${f}')" class="px-3.5 py-1.5 rounded-full border text-xs shrink-0 transition ${cls}">${label}</button>`;
+          ? 'px-3.5 py-1.5 rounded-full bg-cbs-600 text-white text-xs font-semibold shrink-0 transition'
+          : 'px-3.5 py-1.5 rounded-full bg-white hover:bg-cbs-50 text-slate-700 border border-slate-200 text-xs font-medium shrink-0 transition';
+        return `<button type="button" onclick="startFreshFlashcards('${f.key}')" class="${cls}">${f.label}</button>`;
+      }).join('');
+    }
+
+    function renderFlashcardNavPills() {
+      const container = document.getElementById('fc-nav-pills');
+      if (!container) return;
+
+      container.innerHTML = fcDeck.map((card, idx) => {
+        const st = fcResults[card.id];
+        const isCurrent = idx === fcIndex;
+        let cls = 'w-7 h-7 rounded-full text-xs font-semibold shrink-0 transition flex items-center justify-center border ';
+
+        if (st === 'correct') {
+          cls += isCurrent
+            ? 'bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-200'
+            : 'bg-emerald-50 text-emerald-700 border-emerald-300';
+        } else if (st === 'wrong') {
+          cls += isCurrent
+            ? 'bg-rose-600 text-white border-rose-600 ring-2 ring-rose-200'
+            : 'bg-rose-50 text-rose-700 border-rose-300';
+        } else {
+          cls += isCurrent
+            ? 'bg-cbs-600 text-white border-cbs-600 ring-2 ring-cbs-200'
+            : 'bg-white text-slate-600 border-slate-200 hover:border-cbs-400';
+        }
+
+        return `<button type="button" onclick="jumpToFlashcard(${idx})" class="${cls}">${idx + 1}</button>`;
       }).join('');
     }
 
     function renderFlashcard() {
-      if (!fcDeck || fcDeck.length === 0) {
-        fcDeck = [...FLASHCARDS_DATA];
-        fcIndex = 0;
-      }
-
       const card = fcDeck[fcIndex];
+      if (!card) return;
+
       const total = fcDeck.length;
-
-      // Flip state
-      const innerEl = document.getElementById('flashcard-inner');
-      if (fcIsFlipped) {
-        innerEl.classList.add('is-flipped');
-      } else {
-        innerEl.classList.remove('is-flipped');
-      }
-
-      // Card content
-      document.getElementById('fc-front-lecture').textContent = card.lecture;
-      document.getElementById('fc-front-title').innerHTML = card.titleEn;
-      document.getElementById('fc-front-subtitle').textContent = card.titleTh;
-
-      document.getElementById('fc-back-lecture').textContent = card.lecture;
-      document.getElementById('fc-back-title').innerHTML = `${card.titleEn} <span class="text-slate-500 font-medium text-xs sm:text-sm">(${escapeHtml(card.titleTh)})</span>`;
-      document.getElementById('fc-back-formula').innerHTML = card.formulaHtml;
-      document.getElementById('fc-back-note').innerHTML = card.noteHtml;
-
-      // Status pill on front card
-      const frontStatus = document.getElementById('fc-front-status');
       const cardGrade = fcResults[card.id];
-      if (cardGrade === 'correct') {
-        frontStatus.className = 'px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-semibold';
-        frontStatus.textContent = '✓ ตอบถูกแล้ว';
-      } else if (cardGrade === 'wrong') {
-        frontStatus.className = 'px-3 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold';
-        frontStatus.textContent = '✕ ตอบผิด (ควรทบทวน)';
-      } else {
-        frontStatus.className = 'px-3 py-1 rounded-full bg-slate-100 text-slate-500 text-xs font-medium';
-        frontStatus.textContent = 'ยังไม่ประเมิน';
-      }
-
-      // Highlight selected grade button on both card faces
-      const wrongBtns = [document.getElementById('fc-front-btn-wrong'), document.getElementById('fc-btn-wrong')];
-      const correctBtns = [document.getElementById('fc-front-btn-correct'), document.getElementById('fc-btn-correct')];
-      wrongBtns.forEach(btn => {
-        if (!btn) return;
-        btn.className = cardGrade === 'wrong'
-          ? 'px-4 py-2 rounded-full bg-rose-600 text-white border border-rose-600 text-xs sm:text-sm font-semibold shadow-xs transition flex items-center gap-1.5 ring-2 ring-rose-200'
-          : 'px-4 py-2 rounded-full bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 hover:border-rose-400 text-xs sm:text-sm font-semibold transition flex items-center gap-1.5';
-      });
-      correctBtns.forEach(btn => {
-        if (!btn) return;
-        btn.className = cardGrade === 'correct'
-          ? 'px-5 py-2 rounded-full bg-emerald-700 text-white text-xs sm:text-sm font-semibold shadow-xs transition flex items-center gap-1.5 ring-2 ring-emerald-200'
-          : 'px-5 py-2 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-semibold shadow-xs transition flex items-center gap-1.5';
-      });
 
       // Score & counts in current deck
+      const gradedCount = fcDeck.filter(c => fcResults[c.id] !== undefined).length;
       const correctCount = fcDeck.filter(c => fcResults[c.id] === 'correct').length;
       const wrongCount = fcDeck.filter(c => fcResults[c.id] === 'wrong').length;
       const pct = total > 0 ? Math.round((correctCount / total) * 100) : 0;
+
+      // Update Header Save Status Pill for Flashcard
+      if (cardGrade !== undefined) {
+        setSaveStatus('saved', `Saved • บันทึกแล้ว ${gradedCount}/${total} ข้อ`);
+      } else {
+        setSaveStatus('unsaved', `ยังไม่ได้บันทึก - บันทึกแล้ว ${gradedCount}/${total} ข้อ`);
+      }
 
       document.getElementById('fc-score-badge').textContent = `คะแนน: ${correctCount} / ${total} (${pct}%)`;
       document.getElementById('fc-correct-badge').textContent = `✓ ตอบถูก: ${correctCount}`;
@@ -3525,40 +3517,54 @@
         retryWrongBtn.classList.add('hidden');
       }
 
-      // Position & progress bar
       document.getElementById('fc-position-text').textContent = `Card ${fcIndex + 1} / ${total}`;
       const barPct = Math.round(((fcIndex + 1) / total) * 100);
       document.getElementById('fc-progress-bar').style.width = `${barPct}%`;
 
-      // Nav pills
-      const navEl = document.getElementById('fc-nav-pills');
-      navEl.innerHTML = fcDeck.map((c, idx) => {
-        const st = fcResults[c.id];
-        let cls = 'bg-white text-slate-600 border-slate-200 hover:border-cbs-400';
-        if (st === 'correct') cls = 'bg-emerald-500 text-white border-emerald-500';
-        else if (st === 'wrong') cls = 'bg-rose-500 text-white border-rose-500';
-        if (idx === fcIndex) cls += ' ring-2 ring-cbs-400 ring-offset-1 font-bold';
-        return `<button type="button" onclick="jumpToFlashcard(${idx})" class="w-7 h-7 rounded-full border text-xs shrink-0 transition flex items-center justify-center ${cls}">${idx + 1}</button>`;
-      }).join('');
-
-      const activePill = navEl.children[fcIndex];
-      if (activePill && activePill.scrollIntoView) {
-        activePill.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      // Flip state
+      const inner = document.getElementById('flashcard-inner');
+      if (fcIsFlipped) {
+        inner.classList.add('is-flipped');
+      } else {
+        inner.classList.remove('is-flipped');
       }
 
-      // Prev / Next button states
+      // Front content
+      document.getElementById('fc-front-lecture').textContent = card.lecture;
+      document.getElementById('fc-front-title').innerHTML = card.titleEn;
+      document.getElementById('fc-front-subtitle').textContent = card.titleTh;
+
+      const statusEl = document.getElementById('fc-front-status');
+      if (cardGrade === 'correct') {
+        statusEl.className = 'px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-semibold';
+        statusEl.textContent = '✓ ตอบถูกแล้ว';
+      } else if (cardGrade === 'wrong') {
+        statusEl.className = 'px-3 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold';
+        statusEl.textContent = '✕ ตอบผิด (รอทบทวน)';
+      } else {
+        statusEl.className = 'px-3 py-1 rounded-full bg-slate-100 text-slate-500 text-xs font-medium';
+        statusEl.textContent = 'ยังไม่ประเมิน';
+      }
+
+      // Back content
+      document.getElementById('fc-back-lecture').textContent = card.lecture;
+      document.getElementById('fc-back-title').innerHTML = `${card.titleEn} <span class="text-slate-500 font-normal text-sm">(${escapeHtml(card.titleTh)})</span>`;
+      document.getElementById('fc-back-formula').innerHTML = card.formulaHtml;
+      document.getElementById('fc-back-note').innerHTML = card.noteHtml;
+
+      // Prev / Next buttons
       document.getElementById('fc-prev-btn').disabled = fcIndex === 0;
-      document.getElementById('fc-next-btn-text').textContent =
-        fcIndex === total - 1 ? 'สรุปคะแนน Flashcard →' : 'การ์ดถัดไป →';
+      document.getElementById('fc-next-btn-text').textContent = fcIndex === total - 1 ? 'สรุปผล Flashcard →' : 'การ์ดถัดไป →';
+
+      renderFlashcardNavPills();
     }
 
     function flipFlashcard() {
       fcIsFlipped = !fcIsFlipped;
-      const innerEl = document.getElementById('flashcard-inner');
-      if (fcIsFlipped) {
-        innerEl.classList.add('is-flipped');
-      } else {
-        innerEl.classList.remove('is-flipped');
+      const inner = document.getElementById('flashcard-inner');
+      if (inner) {
+        if (fcIsFlipped) inner.classList.add('is-flipped');
+        else inner.classList.remove('is-flipped');
       }
     }
 
@@ -3569,10 +3575,6 @@
       fcResults[card.id] = isCorrect ? 'correct' : 'wrong';
       saveFlashcardSession();
       renderFlashcard();
-
-      const total = fcDeck.length;
-      const gradedTotal = fcDeck.filter(c => fcResults[c.id] !== undefined).length;
-      flashSavedProgressUI(`Saved • บันทึกแล้ว ${gradedTotal}/${total} ใบ`);
 
       // Automatically advance to the next card (or finish if on the last card)
       fcAutoAdvanceTimer = setTimeout(() => {
@@ -3585,7 +3587,7 @@
         } else {
           finishFlashcardQuiz();
         }
-      }, 280);
+      }, 450);
     }
 
     function prevFlashcard() {
@@ -3621,11 +3623,12 @@
         clearTimeout(fcAutoAdvanceTimer);
         fcAutoAdvanceTimer = null;
       }
-      if (idx < 0 || idx >= fcDeck.length) return;
-      fcIndex = idx;
-      fcIsFlipped = false;
-      saveFlashcardSession();
-      renderFlashcard();
+      if (idx >= 0 && idx < fcDeck.length) {
+        fcIndex = idx;
+        fcIsFlipped = false;
+        saveFlashcardSession();
+        renderFlashcard();
+      }
     }
 
     function shuffleFlashcards() {
@@ -3638,7 +3641,6 @@
       fcIsFlipped = false;
       saveFlashcardSession();
       renderFlashcard();
-      flashSavedProgressUI('Saved • สลับลำดับการ์ดแล้ว');
     }
 
     function retryWrongFlashcards() {
@@ -3668,7 +3670,6 @@
       fcRoundLogged = false;
       saveFlashcardSession();
       renderFlashcard();
-      flashSavedProgressUI('Saved • รีเซ็ตคะแนนแล้ว');
     }
 
     function finishFlashcardQuiz() {
@@ -3676,81 +3677,82 @@
         clearTimeout(fcAutoAdvanceTimer);
         fcAutoAdvanceTimer = null;
       }
-      isFlashcardResultMode = true;
 
       const total = fcDeck.length;
       let score = 0;
       const wrongCards = [];
       const topicStats = {};
+      const itemRecords = [];
 
-      const detailedItems = fcDeck.map((card, idx) => {
+      fcDeck.forEach(card => {
         const isCorrect = fcResults[card.id] === 'correct';
+        if (isCorrect) score++;
+        else wrongCards.push(card);
+
         if (!topicStats[card.lecture]) {
           topicStats[card.lecture] = { correct: 0, total: 0 };
         }
         topicStats[card.lecture].total++;
+        if (isCorrect) topicStats[card.lecture].correct++;
 
-        if (isCorrect) {
-          score++;
-          topicStats[card.lecture].correct++;
-        } else {
-          wrongCards.push(card);
-        }
-
-        return {
-          index: idx + 1,
+        itemRecords.push({
           card,
-          isCorrect
-        };
+          isCorrect,
+          isFlashcard: true
+        });
       });
 
-      const percent = total > 0 ? Math.round((score / total) * 100) : 0;
-      const gradedCount = fcDeck.filter(c => fcResults[c.id] !== undefined).length;
-      const deckTitle = fcFilterLecture === 'all'
+      const pct = total > 0 ? Math.round((score / total) * 100) : 0;
+      const label = fcFilterLecture === 'all'
         ? `Flashcard สรุปสูตร Lec 7–12 (${total} ใบ)`
-        : `Flashcard สรุปสูตร ${fcFilterLecture} (${total} ใบ)`;
+        : `Flashcard ${fcFilterLecture} (${total} ใบ)`;
 
-      if (gradedCount > 0 && !fcRoundLogged) {
-        fcRoundLogged = true;
-        const historyList = getHistoryList();
-        historyList.unshift({
+      if (!fcRoundLogged) {
+        const history = getHistoryList();
+        history.unshift({
           id: 'fc_' + Date.now(),
           timestamp: Date.now(),
           mode: 'flashcard',
-          title: deckTitle,
+          modeLabel: label,
           score,
           total,
-          percent,
+          percent: pct,
           topicStats,
           wrongQuestionIds: []
         });
-        saveHistoryList(historyList);
+        saveHistoryList(history.slice(0, 100));
+        fcRoundLogged = true;
       }
 
       lastResultsData = {
-        mode: 'flashcard',
-        title: deckTitle,
+        isFlashcard: true,
+        title: label,
         score,
         total,
-        percent,
+        percent: pct,
         topicStats,
         wrongQuestions: wrongCards,
-        detailedItems,
-        isFlashcard: true
+        itemRecords
       };
 
-      setSaveStatus('saved', 'Saved');
-      renderResultsView(lastResultsData);
+      renderResultsDashboard();
       showOnlyView('results-view');
+      setSaveStatus('saved', 'Saved');
     }
 
     // =========================================================================
     // 12. CUMULATIVE HISTORY & ANALYTICS DASHBOARD
     // =========================================================================
-    function renderHistoryDashboard() {
-      const historyList = getHistoryList();
-      const totalAttempts = historyList.length;
+    function openHistoryView() {
+      renderHistoryDashboard();
+      showOnlyView('history-view');
+    }
 
+    function renderHistoryDashboard() {
+      const history = getHistoryList();
+      document.getElementById('clear-confirm-box').classList.add('hidden');
+
+      const totalAttempts = history.length;
       document.getElementById('stat-total-attempts').textContent = totalAttempts;
 
       if (totalAttempts === 0) {
@@ -3765,93 +3767,97 @@
         return;
       }
 
-      let sumQuestions = 0;
-      let sumCorrect = 0;
-      let bestItem = historyList[0];
-      const aggTopics = {};
-      const uniqueWrongIds = new Set();
+      let sumPct = 0;
+      let totalQs = 0;
+      let bestItem = history[0];
+      const aggTopicStats = {};
+      const uniqueWrongSet = new Set();
 
-      historyList.forEach(att => {
-        sumQuestions += att.total || 0;
-        sumCorrect += att.score || 0;
-        if ((att.percent || 0) > (bestItem.percent || 0)) {
-          bestItem = att;
+      history.forEach(item => {
+        sumPct += item.percent || 0;
+        totalQs += item.total || 0;
+        if ((item.percent || 0) > (bestItem.percent || 0)) {
+          bestItem = item;
         }
-        if (att.topicStats) {
-          Object.entries(att.topicStats).forEach(([tid, st]) => {
-            if (!aggTopics[tid]) aggTopics[tid] = { correct: 0, total: 0 };
-            aggTopics[tid].correct += st.correct || 0;
-            aggTopics[tid].total += st.total || 0;
+        if (item.topicStats) {
+          Object.keys(item.topicStats).forEach(tKey => {
+            if (!aggTopicStats[tKey]) aggTopicStats[tKey] = { correct: 0, total: 0 };
+            aggTopicStats[tKey].correct += item.topicStats[tKey].correct || 0;
+            aggTopicStats[tKey].total += item.topicStats[tKey].total || 0;
           });
         }
-        if (Array.isArray(att.wrongQuestionIds)) {
-          att.wrongQuestionIds.forEach(qid => uniqueWrongIds.add(qid));
+        if (Array.isArray(item.wrongQuestionIds)) {
+          item.wrongQuestionIds.forEach(id => uniqueWrongSet.add(id));
         }
       });
 
-      const avgAcc = sumQuestions > 0 ? Math.round((sumCorrect / sumQuestions) * 100) : 0;
+      const avgAcc = Math.round(sumPct / totalAttempts);
       document.getElementById('stat-avg-accuracy').textContent = `${avgAcc}%`;
       document.getElementById('stat-best-score').textContent = `${bestItem.score}/${bestItem.total} (${bestItem.percent}%)`;
-      document.getElementById('stat-total-questions').textContent = sumQuestions;
+      document.getElementById('stat-total-questions').textContent = totalQs;
 
+      // Filter unique wrong IDs against existing question bank
+      const allQs = getAllCombinedQuestions();
+      const validWrongQs = allQs.filter(q => uniqueWrongSet.has(q.id));
       const retryAllBtn = document.getElementById('retry-all-past-wrong-btn');
-      if (uniqueWrongIds.size > 0) {
+      if (validWrongQs.length > 0) {
         retryAllBtn.classList.remove('hidden');
-        document.getElementById('total-unique-wrong-count').textContent = uniqueWrongIds.size;
+        document.getElementById('total-unique-wrong-count').textContent = validWrongQs.length;
       } else {
         retryAllBtn.classList.add('hidden');
       }
 
-      // Cumulative Topic Breakdown
+      // Cumulative topic breakdown
       const topicContainer = document.getElementById('cumulative-topic-container');
-      const topicEntries = Object.entries(aggTopics);
-      if (topicEntries.length === 0) {
-        topicContainer.innerHTML = '<p class="text-sm text-slate-500 col-span-2 py-4 text-center">ยังไม่มีข้อมูลรายบทเรียน</p>';
+      const topicKeys = Object.keys(aggTopicStats);
+      if (topicKeys.length === 0) {
+        topicContainer.innerHTML = '<p class="text-sm text-slate-500 col-span-2 py-4 text-center">ยังไม่มีข้อมูลแยกรายบทเรียน</p>';
       } else {
-        topicContainer.innerHTML = topicEntries.map(([tid, st]) => {
-          const tMeta = ALL_TOPICS.find(t => t.id === tid) ||
-            FLASHCARD_LECTURE_META[tid] ||
-            { nameEn: tid, nameTh: '' };
-          const acc = st.total > 0 ? Math.round((st.correct / st.total) * 100) : 0;
-          const barColor = acc >= 80 ? 'bg-emerald-500' : acc >= 50 ? 'bg-cbs-600' : 'bg-chula-500';
+        topicContainer.innerHTML = topicKeys.map(tKey => {
+          const st = aggTopicStats[tKey];
+          const tPct = st.total > 0 ? Math.round((st.correct / st.total) * 100) : 0;
+          const tObj = ALL_TOPICS.find(t => t.id === tKey);
+          const fObj = FLASHCARD_LECTURE_META[tKey];
+          const labelEn = tObj ? tObj.nameEn : (fObj ? fObj.nameEn : tKey);
+          const labelTh = tObj ? tObj.nameTh : (fObj ? fObj.nameTh : '');
+          const barColor = tPct >= 80 ? 'bg-emerald-500' : (tPct >= 50 ? 'bg-cbs-600' : 'bg-chula-500');
+
           return `
-            <div class="p-4 rounded-2xl bg-cbs-50/40 border border-slate-200/80 space-y-2">
+            <div class="p-4 rounded-2xl border border-slate-200/80 bg-slate-50/40 space-y-2.5">
               <div class="flex items-start justify-between gap-2">
                 <div>
-                  <div class="text-xs sm:text-sm font-bold text-slate-900">${escapeHtml(tMeta.nameEn)}</div>
-                  <div class="text-[11px] text-slate-500">${escapeHtml(tMeta.nameTh || '')}</div>
+                  <div class="text-xs sm:text-sm font-bold text-slate-900">${escapeHtml(labelEn)}</div>
+                  ${labelTh ? `<div class="text-xs text-slate-500 mt-0.5">${escapeHtml(labelTh)}</div>` : ''}
                 </div>
-                <span class="text-xs font-bold px-2.5 py-0.5 rounded-full bg-white border border-slate-200 text-slate-800 shrink-0">${st.correct}/${st.total} (${acc}%)</span>
+                <span class="text-xs font-bold px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-800 shrink-0">${st.correct}/${st.total} (${tPct}%)</span>
               </div>
-              <div class="w-full h-2 bg-white rounded-full overflow-hidden border border-slate-200/70">
-                <div class="h-full ${barColor} rounded-full" style="width: ${acc}%;"></div>
+              <div class="w-full h-2 bg-slate-200/70 rounded-full overflow-hidden">
+                <div class="h-full ${barColor} rounded-full" style="width: ${tPct}%;"></div>
               </div>
             </div>
           `;
         }).join('');
       }
 
-      // History Log List
-      const logListEl = document.getElementById('history-log-list');
-      logListEl.innerHTML = historyList.map(att => {
-        const d = new Date(att.timestamp);
-        const dateStr = isNaN(d.getTime())
-          ? ''
-          : d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-        const badgeCls = att.percent >= 80
+      // History logs
+      const logList = document.getElementById('history-log-list');
+      logList.innerHTML = history.map(item => {
+        const d = new Date(item.timestamp);
+        const dateStr = d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
+        const timeStr = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+        const badgeColor = item.percent >= 80
           ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-          : att.percent >= 50
-            ? 'bg-cbs-50 text-cbs-700 border-cbs-200'
-            : 'bg-rose-50 text-rose-700 border-rose-200';
+          : (item.percent >= 60 ? 'bg-cbs-50 text-cbs-700 border-cbs-200' : 'bg-rose-50 text-rose-700 border-rose-200');
+
         return `
-          <div class="p-4 rounded-2xl bg-slate-50/70 border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <div class="text-xs sm:text-sm font-bold text-slate-900">${escapeHtml(att.title || att.mode)}</div>
-              <div class="text-[11px] text-slate-500">${dateStr}</div>
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-4 rounded-2xl border border-slate-200/80 bg-white hover:bg-slate-50/50 transition">
+            <div class="space-y-0.5">
+              <div class="text-xs sm:text-sm font-bold text-slate-900">${escapeHtml(item.modeLabel || 'แบบทดสอบ')}</div>
+              <div class="text-xs text-slate-400">${dateStr} เวลา ${timeStr} น.</div>
             </div>
-            <div class="flex items-center gap-2">
-              <span class="px-3 py-1 rounded-full border text-xs font-bold ${badgeCls}">
-                ${att.score} / ${att.total} (${att.percent}%)
+            <div class="flex items-center gap-2.5">
+              <span class="text-xs sm:text-sm font-bold px-3 py-1 rounded-full border ${badgeColor}">
+                ${item.score} / ${item.total} (${item.percent}%)
               </span>
             </div>
           </div>
@@ -3860,19 +3866,19 @@
     }
 
     function retryAllHistoricalMistakes() {
-      const historyList = getHistoryList();
-      const uniqueWrongIds = new Set();
-      historyList.forEach(att => {
-        if (Array.isArray(att.wrongQuestionIds)) {
-          att.wrongQuestionIds.forEach(id => uniqueWrongIds.add(id));
+      const history = getHistoryList();
+      const uniqueWrongSet = new Set();
+      history.forEach(item => {
+        if (Array.isArray(item.wrongQuestionIds)) {
+          item.wrongQuestionIds.forEach(id => uniqueWrongSet.add(id));
         }
       });
 
       const allQs = getAllCombinedQuestions();
-      const missedPool = allQs.filter(q => uniqueWrongIds.has(q.id));
-      if (missedPool.length === 0) return;
+      const wrongQs = allQs.filter(q => uniqueWrongSet.has(q.id));
+      if (wrongQs.length === 0) return;
 
-      activeQuestions = shuffleArray(missedPool).map(q => ({
+      activeQuestions = shuffleArray(wrongQs).map(q => ({
         ...q,
         options: shuffleArray(q.options)
       }));
@@ -3880,12 +3886,11 @@
       userAnswers = {};
       isRetryMode = true;
       examFeedbackMode = 'instant';
-      stopExamTimer();
 
       saveCurrentQuizProgress();
-      setSaveStatus('unsaved');
-      showOnlyView('quiz-view');
+      renderQuestionNavPills();
       renderQuestion();
+      showOnlyView('quiz-view');
     }
 
     function promptClearHistory() {
@@ -3897,10 +3902,13 @@
     }
 
     function confirmClearHistory() {
-      saveHistoryList([]);
-      cancelClearHistory();
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch (e) {
+        // Ignore
+      }
       renderHistoryDashboard();
-      flashSavedProgressUI('Saved • ลบประวัติเรียบร้อยแล้ว');
+      flashSavedProgressUI('Saved');
     }
 
     // =========================================================================
@@ -3908,18 +3916,15 @@
     // =========================================================================
     document.addEventListener('keydown', function (e) {
       const fcVisible = !document.getElementById('flashcard-view').classList.contains('hidden');
-      if (!fcVisible) return;
-      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-
-      if (e.code === 'Space') {
-        e.preventDefault();
-        flipFlashcard();
-      } else if (e.code === 'ArrowRight') {
-        e.preventDefault();
-        nextFlashcard();
-      } else if (e.code === 'ArrowLeft') {
-        e.preventDefault();
-        prevFlashcard();
+      if (fcVisible) {
+        if (e.code === 'Space') {
+          e.preventDefault();
+          flipFlashcard();
+        } else if (e.code === 'ArrowRight') {
+          nextFlashcard();
+        } else if (e.code === 'ArrowLeft') {
+          prevFlashcard();
+        }
       }
     });
 
